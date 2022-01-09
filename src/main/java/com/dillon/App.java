@@ -1,13 +1,22 @@
 package com.dillon;
 
+import java.nio.file.Path;
+import java.util.concurrent.CompletableFuture;
+
 import org.slf4j.Logger;
 
-import akka.NotUsed;
 import akka.actor.typed.ActorSystem;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.Terminated;
 import akka.actor.typed.javadsl.Behaviors;
-import akka.stream.javadsl.Source;
+import akka.stream.javadsl.FileIO;
+import akka.stream.javadsl.Flow;
+import akka.stream.javadsl.Framing;
+import akka.stream.javadsl.FramingTruncation;
+import akka.stream.javadsl.Keep;
+import akka.stream.javadsl.RunnableGraph;
+import akka.stream.javadsl.Sink;
+import akka.util.ByteString;
 
 /**
  * Hello world!
@@ -19,12 +28,29 @@ public class App {
         ActorSystem<Void> actorSystem = ActorSystem.create(App.create(), "ActorSystem");
 
         Logger logger = actorSystem.log();
-        logger.info("Hello world!");
+        var fileSource = FileIO.fromPath(Path.of("src\\main\\resources\\test.txt"));
+        
+        RunnableGraph<CompletableFuture<String>> fileStream = fileSource
+        .via(Framing.delimiter(ByteString.fromString("\r\n"), 1000, FramingTruncation.ALLOW).named("Split"))
+        .via(Flow.of(ByteString.class).map(i -> {
+            logger.info(i.utf8String());
+            return i;
+        }))
+        .toMat(Sink.fold(0, (agg, i) -> agg + 1), Keep.right())
+        .mapMaterializedValue((matResults) -> {
+            CompletableFuture<String> stringResult = new CompletableFuture<>();
+            matResults.whenComplete((result, error) -> {
+                var count = Integer.toString(result);
+                stringResult.complete("Count: " + count);
+            });
+            return stringResult;
+        });
 
-        Source<Integer, NotUsed> source = Source.range(1, 10);
-        source.runForeach(i -> logger.info(i.toString()), actorSystem);
+        var fileResult = fileStream.run(actorSystem);
 
-        // Thread.sleep(10000L);
+        fileResult.whenComplete((result, error) -> {
+            logger.info("Result: {}", result);
+        });
 
         actorSystem.terminate();
 
